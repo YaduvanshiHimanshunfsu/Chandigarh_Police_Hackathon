@@ -1,0 +1,104 @@
+services:
+  # ── PostgreSQL Database ─────────────────────────────────
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: pratibimb-db
+    environment:
+      POSTGRES_USER: pratibimb
+      POSTGRES_PASSWORD: pratibimb_secret_2026
+      POSTGRES_DB: pratibimb_praman
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pratibimb -d pratibimb_praman"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis (Celery Broker + Result Backend) ──────────────
+  redis:
+    image: redis:7-alpine
+    container_name: pratibimb-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── FastAPI Backend ─────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: pratibimb-backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pratibimb:pratibimb_secret_2026@db:5432/pratibimb_praman
+      DATABASE_URL_SYNC: postgresql://pratibimb:pratibimb_secret_2026@db:5432/pratibimb_praman
+      REDIS_URL: redis://redis:6379/0
+      UPLOAD_DIR: /app/uploads
+      REPORTS_DIR: /app/reports
+      SECRET_KEY: pratibimb-hackathon-secret-key-2026
+    volumes:
+      - ./backend:/app
+      - upload_data:/app/uploads
+      - report_data:/app/reports
+      - ./backend/models:/app/models  # Trained models: mobilenet_v2_triage.onnx etc.
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # ── Celery Worker (Forensic Analysis Pipeline) ──────────
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: pratibimb-celery-worker
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pratibimb:pratibimb_secret_2026@db:5432/pratibimb_praman
+      DATABASE_URL_SYNC: postgresql://pratibimb:pratibimb_secret_2026@db:5432/pratibimb_praman
+      REDIS_URL: redis://redis:6379/0
+      UPLOAD_DIR: /app/uploads
+      REPORTS_DIR: /app/reports
+    volumes:
+      - ./backend:/app
+      - upload_data:/app/uploads
+      - report_data:/app/reports
+      - ./backend/models:/app/models  # Trained models: mobilenet_v2_triage.onnx etc.
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: celery -A app.core.celery_app worker --loglevel=info --concurrency=2
+
+  # ── Next.js Frontend Dashboard ──────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: pratibimb-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    command: npm run dev
+
+volumes:
+  postgres_data:
+  upload_data:
+  report_data:
